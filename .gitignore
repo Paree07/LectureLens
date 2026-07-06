@@ -1,0 +1,38 @@
+# Environment variables / API keys
+.env
+.env.*
+!.env.example
+
+# Node dependencies
+node_modules/
+**/node_modules/
+
+# Frontend build output
+dist/
+**/dist/
+build/
+**/build/
+
+# Python virtual environments
+venv/
+**/venv/
+.venv/
+**/.venv/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Generated backend files
+outputs/
+**/outputs/
+temp/
+**/temp/
+
+# IDE / OS files
+.vscode/
+.DS_Store
+Thumbs.db
