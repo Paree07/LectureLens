@@ -5,6 +5,41 @@ import tempfile
 from typing import Optional, Dict, Any
 
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import WebshareProxyConfig
+from youtube_transcript_api._errors import (
+    RequestBlocked,
+    IpBlocked,
+    VideoUnavailable,
+    TranscriptsDisabled,
+    NoTranscriptFound,
+)
+
+
+# =========================================================
+# PROXY CONFIG (set these as environment variables on your
+# hosting provider's dashboard, e.g. Render/Railway "Environment" tab)
+# =========================================================
+
+WEBSHARE_USERNAME = os.environ.get("WEBSHARE_PROXY_USERNAME")
+WEBSHARE_PASSWORD = os.environ.get("WEBSHARE_PROXY_PASSWORD")
+YTDLP_PROXY_URL = os.environ.get("YTDLP_PROXY_URL")  # e.g. "http://user:pass@p.webshare.io:80"
+
+
+def get_ytt_api():
+    """
+    Build a YouTubeTranscriptApi instance.
+    Uses Webshare rotating residential proxy if credentials
+    are configured, otherwise falls back to a direct connection
+    (which will likely be blocked on cloud hosts).
+    """
+    if WEBSHARE_USERNAME and WEBSHARE_PASSWORD:
+        return YouTubeTranscriptApi(
+            proxy_config=WebshareProxyConfig(
+                proxy_username=WEBSHARE_USERNAME,
+                proxy_password=WEBSHARE_PASSWORD,
+            )
+        )
+    return YouTubeTranscriptApi()
 
 
 # =========================================================
@@ -182,6 +217,10 @@ def get_transcript_with_whisper_fallback(
             "max_filesize": 200 * 1024 * 1024,
         }
 
+        if YTDLP_PROXY_URL:
+            ydl_options["proxy"] = YTDLP_PROXY_URL
+            print("Using proxy for yt-dlp download.")
+
         with yt_dlp.YoutubeDL(
             ydl_options
         ) as ydl:
@@ -273,7 +312,7 @@ def get_transcript(
     """
     Transcript strategy:
 
-    1. Try YouTube transcript/captions API
+    1. Try YouTube transcript/captions API (via proxy if configured)
     2. If unavailable or cloud-blocked:
        try yt-dlp audio + Whisper
     3. Return structured response
@@ -293,11 +332,13 @@ def get_transcript(
     # METHOD 1: YOUTUBE TRANSCRIPT API
     # -----------------------------------------------------
 
+    method_1_error_code = None
+
     try:
         print("Trying YouTube transcript API...")
         print("Video ID:", video_id)
 
-        ytt_api = YouTubeTranscriptApi()
+        ytt_api = get_ytt_api()
 
         transcript = ytt_api.fetch(
             video_id,
@@ -348,6 +389,23 @@ def get_transcript(
         print(
             "YouTube captions returned empty text."
         )
+        method_1_error_code = "empty_captions"
+
+    except (RequestBlocked, IpBlocked) as e:
+        print("YouTube blocked this server's IP:", str(e))
+        method_1_error_code = "ip_blocked"
+
+    except TranscriptsDisabled:
+        print("Captions are disabled for this video.")
+        method_1_error_code = "captions_disabled"
+
+    except NoTranscriptFound:
+        print("No transcript found in requested languages.")
+        method_1_error_code = "no_transcript_found"
+
+    except VideoUnavailable:
+        print("Video is unavailable (private/deleted/region-locked).")
+        method_1_error_code = "video_unavailable"
 
     except Exception as e:
         print(
@@ -355,13 +413,15 @@ def get_transcript(
             type(e).__name__,
             str(e),
         )
+        method_1_error_code = "unknown_error"
 
     # -----------------------------------------------------
     # METHOD 2: YT-DLP + WHISPER FALLBACK
     # -----------------------------------------------------
 
     print(
-        "Primary transcript method failed."
+        "Primary transcript method failed:",
+        method_1_error_code,
     )
 
     print(
@@ -393,7 +453,7 @@ def get_transcript(
     return {
         "success": False,
         "transcript": None,
-        "error": "all_transcript_methods_failed",
+        "error": method_1_error_code or "all_transcript_methods_failed",
         "message": (
             "Could not retrieve or generate a transcript. "
             "YouTube may be blocking the deployed cloud server."
