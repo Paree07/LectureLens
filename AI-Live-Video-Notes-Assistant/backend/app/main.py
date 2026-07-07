@@ -9,19 +9,33 @@ from app.api.flashcard_routes import router as flashcard_router
 from app.api.chat_routes import router as chat_router
 
 
+# =========================================================
+# FASTAPI APP
+# =========================================================
+
 app = FastAPI(
     title="LectureLens Backend",
     version="1.0.0"
 )
 
 
-# CORS Configuration
-# Allows local frontend + deployed Vercel frontend
+# =========================================================
+# CORS CONFIGURATION
+# =========================================================
+# Allows:
+# - localhost:5173
+# - localhost:5174
+# - 127.0.0.1:5173
+# - 127.0.0.1:5174
+# - deployed Vercel frontend
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "https://lecture-lens-kappa.vercel.app",
     ],
     allow_credentials=True,
@@ -30,7 +44,10 @@ app.add_middleware(
 )
 
 
-# Include API Routers
+# =========================================================
+# INCLUDE API ROUTERS
+# =========================================================
+
 app.include_router(
     video_router,
     prefix="/api",
@@ -68,7 +85,10 @@ app.include_router(
 )
 
 
-# Root Route
+# =========================================================
+# ROOT ROUTE
+# =========================================================
+
 @app.get("/")
 def home():
     return {
@@ -77,7 +97,10 @@ def home():
     }
 
 
-# Health Check Route
+# =========================================================
+# HEALTH CHECK
+# =========================================================
+
 @app.get("/health")
 def health():
     return {

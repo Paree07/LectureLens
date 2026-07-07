@@ -905,7 +905,7 @@ function Dashboard({ onBack }: { onBack: () => void }) {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch("http://127.0.0.1:8000/api/video/upload", {
+      const response = await fetch("https://lecturelens-production-5dec.up.railway.app/api/video/upload", {
         method: "POST",
         body: formData,
       });
@@ -917,7 +917,7 @@ function Dashboard({ onBack }: { onBack: () => void }) {
       }
 
       setVideoData(data?.video ?? data?.metadata ?? data);
-      setGeneratedNotes(normalizeNotes(data?.notes ?? data?.video?.notes ?? []));
+      setGeneratedNotes(normalizeAINotes(data?.notes ?? data?.video?.notes ?? []));
       setGeneratedTranscript(normalizeTranscript(data?.transcript ?? data?.video?.transcript ?? []));
       setAnalyzedUrl("");
       setActiveTab("notes");
