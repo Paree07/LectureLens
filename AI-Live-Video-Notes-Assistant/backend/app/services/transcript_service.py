@@ -22,7 +22,7 @@ from youtube_transcript_api._errors import (
 #   SUPADATA_API_KEY=your-key-here
 # =========================================================
 
-SUPADATA_API_KEY = os.environ.get("sd_51d0ff930007fbec07d1cef7e9dca238")
+SUPADATA_API_KEY = os.environ.get("SUPADATA_API_KEY")
 
 
 def get_transcript_from_supadata(url: str) -> Optional[str]:
