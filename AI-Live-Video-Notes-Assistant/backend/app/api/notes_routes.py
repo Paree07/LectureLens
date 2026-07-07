@@ -23,78 +23,60 @@ class NotesRequest(BaseModel):
 @router.post("/ai/notes")
 def generate_ai_notes(data: NotesRequest):
     """
-    Generate AI notes from a YouTube video transcript.
+    Fetch transcript first, then generate AI notes.
 
-    Flow:
-    1. Try to fetch transcript
-    2. Check structured transcript response
-    3. If unavailable, return clean error
-    4. If available, send transcript text to AI
-    5. Return generated notes
+    Compatible with the new structured response
+    returned by get_transcript().
     """
 
     try:
-        print("AI Notes request received.")
+        print("=" * 50)
+        print("AI Notes request received")
         print("URL:", data.url)
+        print("=" * 50)
 
         # -----------------------------------------
-        # STEP 1: FETCH TRANSCRIPT
+        # FETCH TRANSCRIPT
         # -----------------------------------------
 
-        transcript_result = get_transcript(
-            data.url
+        transcript_result = get_transcript(data.url)
+
+        print(
+            "Transcript result success:",
+            transcript_result.get("success")
+            if isinstance(transcript_result, dict)
+            else "invalid_result"
         )
 
         # -----------------------------------------
-        # STEP 2: VALIDATE TRANSCRIPT RESPONSE
+        # VALIDATE TRANSCRIPT RESPONSE
         # -----------------------------------------
 
-        if not transcript_result:
-            print(
-                "AI Notes Error:",
-                "Transcript service returned no response."
-            )
-
+        if not isinstance(transcript_result, dict):
             return {
                 "success": False,
-                "notes": None,
-                "error": "transcript_service_error",
-                "message": "Transcript service returned no response."
+                "error": "invalid_transcript_response",
+                "message": (
+                    "Transcript service returned "
+                    "an invalid response."
+                ),
+            }
+
+        if not transcript_result.get("success"):
+            return {
+                "success": False,
+                "error": transcript_result.get(
+                    "error",
+                    "transcript_unavailable",
+                ),
+                "message": transcript_result.get(
+                    "message",
+                    "Transcript not available.",
+                ),
             }
 
         # -----------------------------------------
-        # STEP 3: HANDLE TRANSCRIPT FAILURE
-        # -----------------------------------------
-
-        if not transcript_result.get(
-            "success",
-            False
-        ):
-            error_code = transcript_result.get(
-                "error",
-                "transcript_unavailable"
-            )
-
-            error_message = transcript_result.get(
-                "message",
-                "Transcript not available."
-            )
-
-            print(
-                "AI Notes Transcript Error:",
-                error_code,
-                error_message
-            )
-
-            return {
-                "success": False,
-                "notes": None,
-                "error": error_code,
-                "message": error_message
-            }
-
-        # -----------------------------------------
-        # STEP 4: EXTRACT ACTUAL TRANSCRIPT TEXT
+        # EXTRACT ACTUAL TRANSCRIPT STRING
         # -----------------------------------------
 
         transcript = transcript_result.get(
@@ -102,74 +84,73 @@ def generate_ai_notes(data: NotesRequest):
         )
 
         if not transcript:
-            print(
-                "AI Notes Error:",
-                "Transcript text is empty."
-            )
-
             return {
                 "success": False,
-                "notes": None,
                 "error": "empty_transcript",
-                "message": "Transcript text is empty."
+                "message": (
+                    "Transcript was empty, so AI notes "
+                    "could not be generated."
+                ),
+            }
+
+        if not isinstance(transcript, str):
+            return {
+                "success": False,
+                "error": "invalid_transcript_type",
+                "message": (
+                    "Transcript must be text before "
+                    "AI notes can be generated."
+                ),
             }
 
         print(
-            "Transcript ready for AI notes:",
-            len(transcript),
-            "characters"
+            "Transcript characters:",
+            len(transcript)
         )
 
         # -----------------------------------------
-        # STEP 5: GENERATE NOTES
+        # GENERATE NOTES
         # -----------------------------------------
 
         notes = generate_notes(
             transcript
         )
 
-        # -----------------------------------------
-        # STEP 6: VALIDATE AI RESPONSE
-        # -----------------------------------------
-
         if not notes:
-            print(
-                "AI Notes Error:",
-                "AI service returned empty notes."
-            )
-
             return {
                 "success": False,
-                "notes": None,
-                "error": "empty_ai_response",
-                "message": "AI service returned empty notes."
+                "error": "empty_ai_notes",
+                "message": (
+                    "AI service returned empty notes."
+                ),
             }
 
-        # -----------------------------------------
-        # SUCCESS
-        # -----------------------------------------
+        print("=" * 50)
+        print("AI notes generated successfully")
+        print("=" * 50)
 
-        print(
-            "AI notes generated successfully."
-        )
+        # -----------------------------------------
+        # SUCCESS RESPONSE
+        # -----------------------------------------
 
         return {
             "success": True,
             "notes": notes,
-            "error": None,
-            "message": "AI notes generated successfully."
         }
 
     except Exception as e:
+        print("=" * 50)
         print(
-            "AI Notes Error:",
+            "AI Notes Route Error:",
             type(e).__name__,
-            str(e)
+            str(e),
         )
+        print("=" * 50)
 
         return {
             "success": False,
-            "notes": None,
             "error": type(e).__name__,
-            "message": "Could not generate AI notes."
+            "message": (
+                "Could not generate AI notes."
+            ),
         }
