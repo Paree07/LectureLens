@@ -1,26 +1,44 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
+import requests
+import re
 
 from app.services.transcript_service import get_transcript
-
-# IMPORTANT:
-# Agar tumhare metadata service ka import path/name different hai,
-# to apna existing metadata import same rehne dena.
-try:
-    from app.services.youtube_service import get_video_metadata
-except ImportError:
-    get_video_metadata = None
 
 
 router = APIRouter()
 
 
 # =========================================================
-# REQUEST MODELS
+# REQUEST MODEL
 # =========================================================
 
 class YouTubeRequest(BaseModel):
     url: str
+
+
+# =========================================================
+# EXTRACT YOUTUBE VIDEO ID
+# =========================================================
+
+def extract_video_id(url: str):
+    if not url:
+        return None
+
+    patterns = [
+        r"(?:youtube\.com/watch\?v=)([A-Za-z0-9_-]{11})",
+        r"(?:youtu\.be/)([A-Za-z0-9_-]{11})",
+        r"(?:youtube\.com/embed/)([A-Za-z0-9_-]{11})",
+        r"(?:youtube\.com/shorts/)([A-Za-z0-9_-]{11})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, url)
+
+        if match:
+            return match.group(1)
+
+    return None
 
 
 # =========================================================
@@ -30,37 +48,83 @@ class YouTubeRequest(BaseModel):
 @router.post("/youtube/metadata")
 def youtube_metadata(request: YouTubeRequest):
     """
-    Fetch YouTube video metadata.
+    Fetch YouTube metadata directly using
+    YouTube oEmbed.
+
+    No dependency on youtube_service.py.
     """
 
-    if get_video_metadata is None:
+    video_id = extract_video_id(request.url)
+
+    if not video_id:
         return {
             "success": False,
-            "error": "metadata_service_unavailable",
-            "message": "Metadata service is unavailable.",
+            "error": "invalid_youtube_url",
+            "message": "Invalid YouTube URL.",
         }
 
     try:
-        metadata = get_video_metadata(request.url)
+        print("Fetching metadata for:", request.url)
 
-        if not metadata:
-            return {
-                "success": False,
-                "error": "metadata_not_found",
-                "message": "Could not fetch video metadata.",
-            }
+        response = requests.get(
+            "https://www.youtube.com/oembed",
+            params={
+                "url": request.url,
+                "format": "json",
+            },
+            timeout=15,
+        )
 
-        # If service already returns a dictionary,
-        # preserve all existing fields.
-        if isinstance(metadata, dict):
+        print(
+            "YouTube oEmbed status:",
+            response.status_code,
+        )
+
+        if response.ok:
+            data = response.json()
+
             return {
                 "success": True,
-                **metadata,
+                "id": video_id,
+                "title": data.get(
+                    "title",
+                    "YouTube Video",
+                ),
+                "author": data.get(
+                    "author_name",
+                    "YouTube",
+                ),
+                "author_url": data.get(
+                    "author_url",
+                ),
+                "thumbnail": data.get(
+                    "thumbnail_url",
+                    f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                ),
+                "provider": data.get(
+                    "provider_name",
+                    "YouTube",
+                ),
+                "url": request.url,
             }
 
+        print(
+            "oEmbed failed:",
+            response.status_code,
+            response.text[:300],
+        )
+
+        # Fallback metadata
         return {
             "success": True,
-            "data": metadata,
+            "id": video_id,
+            "title": "YouTube Video",
+            "author": "YouTube",
+            "thumbnail": (
+                f"https://img.youtube.com/vi/"
+                f"{video_id}/hqdefault.jpg"
+            ),
+            "url": request.url,
         }
 
     except Exception as e:
@@ -70,10 +134,18 @@ def youtube_metadata(request: YouTubeRequest):
             str(e),
         )
 
+        # Important:
+        # Metadata should still not crash the app.
         return {
-            "success": False,
-            "error": type(e).__name__,
-            "message": "Could not fetch YouTube metadata.",
+            "success": True,
+            "id": video_id,
+            "title": "YouTube Video",
+            "author": "YouTube",
+            "thumbnail": (
+                f"https://img.youtube.com/vi/"
+                f"{video_id}/hqdefault.jpg"
+            ),
+            "url": request.url,
         }
 
 
@@ -85,9 +157,6 @@ def youtube_metadata(request: YouTubeRequest):
 def youtube_transcript(request: YouTubeRequest):
     """
     Fetch YouTube transcript.
-
-    Always returns HTTP 200 with structured success/error data.
-    This prevents frontend fetch failures caused by fake 404s.
     """
 
     result = get_transcript(request.url)
