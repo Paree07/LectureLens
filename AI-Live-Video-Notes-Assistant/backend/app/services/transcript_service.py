@@ -1,4 +1,7 @@
+import os
 import re
+import shutil
+import tempfile
 from typing import Optional, Dict, Any
 
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -14,8 +17,9 @@ _whisper_model = None
 def get_whisper_model():
     """
     Load Whisper model only once.
-    Reuse the same model for future uploads.
+    Reuse the same model for future transcriptions.
     """
+
     global _whisper_model
 
     if _whisper_model is None:
@@ -40,7 +44,7 @@ def get_whisper_model():
 
 def extract_video_id(url: str) -> Optional[str]:
     """
-    Extract YouTube video ID from supported YouTube URLs.
+    Extract YouTube video ID from common YouTube URLs.
     """
 
     if not url:
@@ -63,17 +67,216 @@ def extract_video_id(url: str) -> Optional[str]:
 
 
 # =========================================================
+# TRANSCRIBE AUDIO FILE WITH WHISPER
+# =========================================================
+
+def transcribe_audio_with_whisper(
+    file_path: str,
+    language: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Transcribe an audio/video file using faster-whisper.
+    """
+
+    try:
+        model = get_whisper_model()
+
+        print("Starting Whisper transcription...")
+        print("File:", file_path)
+        print("Language:", language or "auto")
+
+        segments, info = model.transcribe(
+            file_path,
+            language=language,
+            beam_size=1,
+            vad_filter=True,
+            condition_on_previous_text=False,
+        )
+
+        text_parts = []
+
+        for segment in segments:
+            text = getattr(segment, "text", "")
+
+            if text:
+                cleaned_text = text.strip()
+
+                if cleaned_text:
+                    text_parts.append(cleaned_text)
+
+        full_text = " ".join(text_parts).strip()
+
+        if not full_text:
+            print("Whisper returned empty transcript.")
+            return None
+
+        detected_language = getattr(
+            info,
+            "language",
+            "unknown",
+        )
+
+        print("Whisper transcription successful.")
+        print("Detected language:", detected_language)
+        print("Characters:", len(full_text))
+
+        return full_text
+
+    except Exception as e:
+        print(
+            "Whisper Transcription Error:",
+            type(e).__name__,
+            str(e),
+        )
+
+        return None
+
+
+# =========================================================
+# YOUTUBE AUDIO FALLBACK
+# =========================================================
+
+def get_transcript_with_whisper_fallback(
+    url: str,
+) -> Optional[str]:
+    """
+    Fallback method:
+
+    1. Download best available audio with yt-dlp
+    2. Transcribe downloaded audio using faster-whisper
+    3. Delete temporary files
+    """
+
+    temp_dir = None
+
+    try:
+        import yt_dlp
+
+        print("Trying yt-dlp + Whisper fallback...")
+
+        temp_dir = tempfile.mkdtemp(
+            prefix="lecturelens_"
+        )
+
+        output_template = os.path.join(
+            temp_dir,
+            "audio.%(ext)s",
+        )
+
+        ydl_options = {
+            "format": "bestaudio/best",
+
+            "outtmpl": output_template,
+
+            "quiet": True,
+
+            "no_warnings": True,
+
+            "noplaylist": True,
+
+            "retries": 2,
+
+            "socket_timeout": 30,
+
+            # Do not download excessively large media
+            "max_filesize": 200 * 1024 * 1024,
+        }
+
+        with yt_dlp.YoutubeDL(
+            ydl_options
+        ) as ydl:
+
+            print("Downloading YouTube audio...")
+
+            info = ydl.extract_info(
+                url,
+                download=True,
+            )
+
+            downloaded_file = ydl.prepare_filename(
+                info
+            )
+
+        print(
+            "yt-dlp reported file:",
+            downloaded_file,
+        )
+
+        # Sometimes extension/path may differ.
+        # Find actual downloaded file in temp folder.
+        if not os.path.exists(downloaded_file):
+
+            files = [
+                os.path.join(temp_dir, name)
+                for name in os.listdir(temp_dir)
+                if os.path.isfile(
+                    os.path.join(temp_dir, name)
+                )
+            ]
+
+            if not files:
+                print(
+                    "Whisper fallback failed:",
+                    "No downloaded audio file found.",
+                )
+                return None
+
+            downloaded_file = files[0]
+
+        print(
+            "Audio downloaded successfully:",
+            downloaded_file,
+        )
+
+        transcript = transcribe_audio_with_whisper(
+            downloaded_file,
+            language=None,
+        )
+
+        return transcript
+
+    except Exception as e:
+        print(
+            "YouTube Whisper Fallback Error:",
+            type(e).__name__,
+            str(e),
+        )
+
+        return None
+
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(
+                    temp_dir,
+                    ignore_errors=True,
+                )
+
+                print(
+                    "Temporary YouTube files cleaned."
+                )
+
+            except Exception as cleanup_error:
+                print(
+                    "Cleanup Error:",
+                    str(cleanup_error),
+                )
+
+
+# =========================================================
 # YOUTUBE TRANSCRIPT
 # =========================================================
 
-def get_transcript(url: str) -> Dict[str, Any]:
+def get_transcript(
+    url: str,
+) -> Dict[str, Any]:
     """
-    Try to fetch transcript from YouTube.
+    Transcript strategy:
 
-    Important:
-    Railway/cloud IPs may be blocked by YouTube.
-    In that case return a clean structured response
-    instead of crashing or pretending the route is missing.
+    1. Try YouTube transcript/captions API
+    2. If unavailable or cloud-blocked:
+       try yt-dlp audio + Whisper
+    3. Return structured response
     """
 
     video_id = extract_video_id(url)
@@ -85,6 +288,10 @@ def get_transcript(url: str) -> Dict[str, Any]:
             "error": "invalid_youtube_url",
             "message": "Invalid YouTube URL.",
         }
+
+    # -----------------------------------------------------
+    # METHOD 1: YOUTUBE TRANSCRIPT API
+    # -----------------------------------------------------
 
     try:
         print("Trying YouTube transcript API...")
@@ -105,103 +312,102 @@ def get_transcript(url: str) -> Dict[str, Any]:
         text_parts = []
 
         for item in transcript:
-            text = getattr(item, "text", None)
+            text = getattr(
+                item,
+                "text",
+                None,
+            )
 
             if text:
                 cleaned_text = text.strip()
 
                 if cleaned_text:
-                    text_parts.append(cleaned_text)
+                    text_parts.append(
+                        cleaned_text
+                    )
 
-        full_text = " ".join(text_parts).strip()
+        full_text = " ".join(
+            text_parts
+        ).strip()
 
-        if not full_text:
+        if full_text:
+            print(
+                "YouTube transcript fetched successfully:",
+                len(full_text),
+                "characters",
+            )
+
             return {
-                "success": False,
-                "transcript": None,
-                "error": "empty_transcript",
-                "message": "YouTube returned an empty transcript.",
+                "success": True,
+                "transcript": full_text,
+                "source": "youtube_captions",
+                "error": None,
+                "message": "Transcript fetched successfully.",
             }
 
         print(
-            "YouTube transcript fetched successfully:",
-            len(full_text),
-            "characters",
+            "YouTube captions returned empty text."
         )
-
-        return {
-            "success": True,
-            "transcript": full_text,
-            "error": None,
-            "message": "Transcript fetched successfully.",
-        }
 
     except Exception as e:
-        error_type = type(e).__name__
-        error_message = str(e)
-
         print(
-            "YouTube Transcript Error:",
-            error_type,
-            error_message,
+            "YouTube Transcript API Error:",
+            type(e).__name__,
+            str(e),
         )
 
-        lower_error = error_message.lower()
+    # -----------------------------------------------------
+    # METHOD 2: YT-DLP + WHISPER FALLBACK
+    # -----------------------------------------------------
 
-        # Detect common cloud/datacenter IP blocking
-        if (
-            "requestblocked" in error_type.lower()
-            or "ipblocked" in error_type.lower()
-            or "not a bot" in lower_error
-            or "sign in to confirm" in lower_error
-            or "blocked" in lower_error
-        ):
-            return {
-                "success": False,
-                "transcript": None,
-                "error": "youtube_blocked_cloud_server",
-                "message": (
-                    "YouTube blocked transcript access from the cloud server. "
-                    "The video can still play, but transcript-based AI features "
-                    "are unavailable for this video."
-                ),
-            }
+    print(
+        "Primary transcript method failed."
+    )
 
-        if (
-            "transcriptsdisabled" in error_type.lower()
-            or "disabled" in lower_error
-        ):
-            return {
-                "success": False,
-                "transcript": None,
-                "error": "transcripts_disabled",
-                "message": "Transcripts are disabled for this YouTube video.",
-            }
+    print(
+        "Trying audio + Whisper fallback..."
+    )
 
-        if (
-            "notranscriptfound" in error_type.lower()
-            or "no transcript" in lower_error
-        ):
-            return {
-                "success": False,
-                "transcript": None,
-                "error": "transcript_not_found",
-                "message": "No supported transcript was found for this video.",
-            }
+    whisper_transcript = (
+        get_transcript_with_whisper_fallback(
+            url
+        )
+    )
 
+    if whisper_transcript:
         return {
-            "success": False,
-            "transcript": None,
-            "error": error_type,
-            "message": "Could not retrieve the YouTube transcript.",
+            "success": True,
+            "transcript": whisper_transcript,
+            "source": "whisper_fallback",
+            "error": None,
+            "message": (
+                "Transcript generated from video audio "
+                "using Whisper."
+            ),
         }
+
+    # -----------------------------------------------------
+    # ALL METHODS FAILED
+    # -----------------------------------------------------
+
+    return {
+        "success": False,
+        "transcript": None,
+        "error": "all_transcript_methods_failed",
+        "message": (
+            "Could not retrieve or generate a transcript. "
+            "YouTube may be blocking the deployed cloud server."
+        ),
+    }
 
 
 # =========================================================
 # LANGUAGE MAPPING
 # =========================================================
 
-def get_whisper_language(language: str) -> Optional[str]:
+def get_whisper_language(
+    language: str,
+) -> Optional[str]:
     """
     Convert frontend language names
     into Whisper language codes.
@@ -214,10 +420,7 @@ def get_whisper_language(language: str) -> Optional[str]:
     language_map = {
         "english": "en",
         "hindi": "hi",
-
-        # Auto detection is better for Hinglish
         "hinglish": None,
-
         "auto": None,
         "automatic": None,
     }
@@ -248,94 +451,11 @@ def transcribe_uploaded_file(
         )
         return None
 
-    try:
-        model = get_whisper_model()
+    whisper_language = get_whisper_language(
+        language
+    )
 
-        whisper_language = get_whisper_language(
-            language
-        )
-
-        print(
-            "Starting uploaded file transcription."
-        )
-
-        print(
-            "Language:",
-            whisper_language or "auto",
-        )
-
-        segments, info = model.transcribe(
-            file_path,
-            language=whisper_language,
-            beam_size=1,
-            vad_filter=False,
-            condition_on_previous_text=False,
-        )
-
-        text_parts = []
-
-        for segment in segments:
-            text = getattr(
-                segment,
-                "text",
-                "",
-            )
-
-            if text:
-                cleaned_text = text.strip()
-
-                if cleaned_text:
-                    text_parts.append(
-                        cleaned_text
-                    )
-
-        full_text = " ".join(
-            text_parts
-        ).strip()
-
-        if not full_text:
-            print(
-                "Upload Transcript Error:",
-                "Whisper returned empty transcript",
-            )
-            return None
-
-        detected_language = getattr(
-            info,
-            "language",
-            "unknown",
-        )
-
-        print(
-            "Uploaded file transcribed successfully."
-        )
-
-        print(
-            "Detected language:",
-            detected_language,
-        )
-
-        print(
-            "Characters:",
-            len(full_text),
-        )
-
-        return full_text
-
-    except ImportError as e:
-        print(
-            "Upload Transcript Error:",
-            "faster-whisper is not installed.",
-            str(e),
-        )
-
-        return None
-
-    except Exception as e:
-        print(
-            "Upload Transcript Error:",
-            type(e).__name__,
-            str(e),
-        )
-
-        return None
+    return transcribe_audio_with_whisper(
+        file_path=file_path,
+        language=whisper_language,
+    )
