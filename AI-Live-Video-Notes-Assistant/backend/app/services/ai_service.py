@@ -44,7 +44,6 @@ def clean_json_response(text: str):
 
     text = text.strip()
 
-    # Remove ```json
     text = re.sub(
         r"^```json\s*",
         "",
@@ -52,21 +51,18 @@ def clean_json_response(text: str):
         flags=re.IGNORECASE
     )
 
-    # Remove opening ```
     text = re.sub(
         r"^```\s*",
         "",
         text
     )
 
-    # Remove closing ```
     text = re.sub(
         r"\s*```$",
         "",
         text
     )
 
-    # Find JSON object
     start = text.find("{")
     end = text.rfind("}")
 
@@ -81,21 +77,13 @@ def clean_json_response(text: str):
 
 
 # ===================================
-# REDUCE LONG TRANSCRIPTS
+# CLEAN TRANSCRIPT
 # ===================================
 
-def reduce_transcript(
-    transcript: str,
-    max_chars: int = 12000
-):
+def clean_transcript_text(transcript: str):
     """
-    Reduces very long transcripts so the request
-    stays under token limits.
-
-    Keeps:
-    - beginning
-    - middle
-    - ending
+    Removes unnecessary whitespace so fewer
+    characters/tokens are sent to Groq.
     """
 
     if not transcript:
@@ -103,63 +91,180 @@ def reduce_transcript(
 
     transcript = transcript.strip()
 
-    # If transcript is already short
+    # Replace repeated whitespace/newlines
+    transcript = re.sub(
+        r"\s+",
+        " ",
+        transcript
+    )
+
+    return transcript.strip()
+
+
+# ===================================
+# REDUCE LONG TRANSCRIPTS SAFELY
+# ===================================
+
+def reduce_transcript(
+    transcript: str,
+    max_chars: int = 6000
+):
+    """
+    Keeps representative parts from across
+    the entire lecture while staying safely
+    below Groq request limits.
+
+    For long transcripts, samples:
+    - beginning
+    - early-middle
+    - middle
+    - late-middle
+    - ending
+    """
+
+    transcript = clean_transcript_text(
+        transcript
+    )
+
+    if not transcript:
+        return ""
+
     if len(transcript) <= max_chars:
         print(
-            f"Transcript is within safe limit: "
-            f"{len(transcript)} characters"
+            "Transcript is within safe limit:",
+            len(transcript),
+            "characters"
         )
 
         return transcript
 
     print(
-        f"Long transcript detected: "
-        f"{len(transcript)} characters"
+        "Long transcript detected:",
+        len(transcript),
+        "characters"
     )
 
-    # Divide allowed size into 3 parts
-    part_size = max_chars // 3
+    # Use 5 samples from across the lecture
+    sample_count = 5
 
-    # Beginning
-    beginning = transcript[:part_size]
+    # Leave some room for section labels
+    usable_chars = max_chars - 500
 
-    # Middle
-    middle_start = max(
+    part_size = usable_chars // sample_count
+
+    transcript_length = len(transcript)
+
+    positions = [
         0,
-        (len(transcript) // 2)
-        - (part_size // 2)
-    )
-
-    middle = transcript[
-        middle_start:
-        middle_start + part_size
+        transcript_length // 4,
+        transcript_length // 2,
+        (transcript_length * 3) // 4,
+        max(0, transcript_length - part_size)
     ]
 
-    # Ending
-    ending = transcript[-part_size:]
+    labels = [
+        "LECTURE BEGINNING",
+        "LECTURE EARLY SECTION",
+        "LECTURE MIDDLE",
+        "LECTURE LATE SECTION",
+        "LECTURE END"
+    ]
 
-    reduced = f"""
-LECTURE BEGINNING:
+    sections = []
 
-{beginning}
+    for label, start in zip(labels, positions):
 
+        # Keep slice inside transcript bounds
+        start = min(
+            start,
+            max(0, transcript_length - part_size)
+        )
 
-LECTURE MIDDLE:
+        section = transcript[
+            start:
+            start + part_size
+        ]
 
-{middle}
+        sections.append(
+            f"{label}:\n{section}"
+        )
 
+    reduced = "\n\n".join(
+        sections
+    )
 
-LECTURE END:
-
-{ending}
-"""
+    # Absolute safety cap
+    reduced = reduced[:max_chars]
 
     print(
-        f"Transcript reduced to: "
-        f"{len(reduced)} characters"
+        "Transcript reduced to:",
+        len(reduced),
+        "characters"
     )
 
     return reduced
+
+
+# ===================================
+# VALIDATE NOTES STRUCTURE
+# ===================================
+
+def validate_notes(notes):
+    """
+    Validates the final AI notes JSON.
+    """
+
+    if not isinstance(notes, dict):
+        raise ValueError(
+            "AI notes must be a JSON object"
+        )
+
+    required_keys = [
+        "summary",
+        "key_concepts",
+        "definitions",
+        "exam_tips"
+    ]
+
+    for key in required_keys:
+        if key not in notes:
+            raise ValueError(
+                f"Missing required field: {key}"
+            )
+
+    if not isinstance(
+        notes["summary"],
+        str
+    ):
+        raise ValueError(
+            "summary must be a string"
+        )
+
+    if not isinstance(
+        notes["key_concepts"],
+        list
+    ):
+        raise ValueError(
+            "key_concepts must be a list"
+        )
+
+    if not isinstance(
+        notes["definitions"],
+        list
+    ):
+        raise ValueError(
+            "definitions must be a list"
+        )
+
+    if not isinstance(
+        notes["exam_tips"],
+        list
+    ):
+        raise ValueError(
+            "exam_tips must be a list"
+        )
+
+    return notes
 
 
 # ===================================
@@ -174,150 +279,71 @@ def generate_notes(transcript: str):
         )
 
     # -----------------------------------
-    # Reduce long transcript
+    # REDUCE TRANSCRIPT
     # -----------------------------------
 
     safe_transcript = reduce_transcript(
         transcript,
-        max_chars=12000
+        max_chars=6000
     )
+
+    if not safe_transcript:
+        raise ValueError(
+            "Transcript became empty after cleaning"
+        )
 
 
     # -----------------------------------
-    # AI PROMPT
+    # COMPACT AI PROMPT
     # -----------------------------------
 
     prompt = f"""
-You are an expert multilingual lecture assistant
-and academic study-notes generator.
+Create concise academic study notes from the lecture transcript below.
 
-The lecture transcript may be written or spoken in:
+LANGUAGE:
+- Understand English, Hindi, Hinglish, and mixed-language speech.
+- ALWAYS write final notes in clear natural English.
+- Do not output Hindi or Devanagari.
+- Preserve technical terms and proper names.
+- Correct obvious speech-to-text mistakes when meaning is clear.
+- Do not invent unsupported facts.
 
-- English
-- Hindi
-- Hinglish
-- Mixed Hindi-English
-- Any other language
-
-You must understand the meaning of the transcript
-regardless of its original language.
-
-
-LANGUAGE RULES:
-
-1. ALWAYS generate the final notes in ENGLISH.
-
-2. If the transcript is Hindi:
-   understand the Hindi content and convert
-   the meaning into clear natural English notes.
-
-3. If the transcript is Hinglish:
-   understand both Hindi and English parts
-   and write unified English notes.
-
-4. If the transcript is already English:
-   generate polished English study notes.
-
-5. Do NOT perform literal word-by-word translation.
-
-6. Write natural, meaningful academic English.
-
-7. Preserve technical terms correctly.
-
-8. Do NOT output Hindi text.
-
-9. Do NOT output Devanagari characters.
-
-10. Every field must be written in English:
-    - summary
-    - key concepts
-    - definitions
-    - exam tips
-
-
-IMPORTANT JSON RULES:
-
+OUTPUT:
 Return ONLY one valid JSON object.
+No markdown.
+No code fences.
+No text before or after JSON.
 
-Do not return markdown.
-
-Do not return ```json.
-
-Do not write explanations before JSON.
-
-Do not write explanations after JSON.
-
-Use double quotes for:
-- keys
-- string values
-
-Do not use trailing commas.
-
-
-USE EXACTLY THIS JSON STRUCTURE:
+Use exactly this structure:
 
 {{
-  "summary": "A concise English summary of the lecture",
-
+  "summary": "Concise meaningful English summary",
   "key_concepts": [
-    "English key concept 1",
-    "English key concept 2",
-    "English key concept 3",
-    "English key concept 4",
-    "English key concept 5"
+    "Concept 1",
+    "Concept 2",
+    "Concept 3",
+    "Concept 4",
+    "Concept 5"
   ],
-
   "definitions": [
     {{
-      "term": "Important term in English",
+      "term": "Important term",
       "meaning": "Clear English explanation"
     }}
   ],
-
   "exam_tips": [
-    "Practical exam tip in English",
-    "Another exam tip in English"
+    "Practical exam tip 1",
+    "Practical exam tip 2"
   ]
 }}
 
-
-CONTENT RULES:
-
-- Summary must be concise but meaningful.
-
-- Summary must explain the main lecture topic.
-
+RULES:
 - Give 5 to 8 key concepts.
-
-- All key concepts must be in English.
-
-- Give 3 to 6 useful definitions
-  when possible.
-
-- Definition terms must be in English.
-
-- Definition meanings must be in English.
-
+- Give 3 to 6 definitions when possible.
 - Give 2 to 5 practical exam tips.
-
-- Exam tips must be in English.
-
-- Do not invent facts that are not supported
-  by the transcript.
-
-- Correct obvious speech-to-text mistakes
-  when the intended meaning is clear.
-
-- Preserve programming terms,
-  technical terms, framework names,
-  library names and product names.
-
-- Keep the output concise.
-
-- The final response must be valid JSON.
-
-- FINAL OUTPUT LANGUAGE MUST ALWAYS BE ENGLISH.
-
+- Keep output concise.
+- All fields must be in English.
+- Base notes only on the provided transcript.
 
 LECTURE TRANSCRIPT:
 
@@ -361,17 +387,11 @@ LECTURE TRANSCRIPT:
                     "role": "system",
                     "content": (
                         "You are a multilingual academic "
-                        "study assistant. "
-                        "You understand English, Hindi, "
-                        "Hinglish and other languages. "
-                        "Regardless of the transcript language, "
-                        "always generate all final notes "
-                        "in clear natural English. "
-                        "Never output Hindi or Devanagari text. "
-                        "Always return strict valid JSON only."
+                        "study assistant. Always produce "
+                        "concise English study notes and "
+                        "return strict valid JSON only."
                     )
                 },
-
                 {
                     "role": "user",
                     "content": prompt
@@ -384,7 +404,7 @@ LECTURE TRANSCRIPT:
                 "type": "json_object"
             },
 
-            max_tokens=1200
+            max_tokens=900
         )
 
 
@@ -423,58 +443,12 @@ LECTURE TRANSCRIPT:
 
 
         # -----------------------------------
-        # FINAL VALIDATION
+        # VALIDATE JSON
         # -----------------------------------
 
-        required_keys = [
-            "summary",
-            "key_concepts",
-            "definitions",
-            "exam_tips"
-        ]
-
-        for key in required_keys:
-            if key not in notes:
-                raise ValueError(
-                    f"Missing required field: {key}"
-                )
-
-
-        # -----------------------------------
-        # TYPE VALIDATION
-        # -----------------------------------
-
-        if not isinstance(
-            notes["summary"],
-            str
-        ):
-            raise ValueError(
-                "summary must be a string"
-            )
-
-        if not isinstance(
-            notes["key_concepts"],
-            list
-        ):
-            raise ValueError(
-                "key_concepts must be a list"
-            )
-
-        if not isinstance(
-            notes["definitions"],
-            list
-        ):
-            raise ValueError(
-                "definitions must be a list"
-            )
-
-        if not isinstance(
-            notes["exam_tips"],
-            list
-        ):
-            raise ValueError(
-                "exam_tips must be a list"
-            )
+        notes = validate_notes(
+            notes
+        )
 
 
         print("=" * 50)
