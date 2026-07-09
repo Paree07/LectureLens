@@ -9,7 +9,7 @@ Users can paste a YouTube lecture URL or upload supported media, while LectureLe
 ## 🌐 Live Demo
 
 🚀 **Live Website:**  
-https://lecture-lens-frontend-kxzq-8y7yx3zj0-paree07s-projects.vercel.app/
+(https://lecture-lens-frontend-kxzq.vercel.app/)
 
 🔗 **Backend API:**  
 https://lecturelens-production-5dec.up.railway.app
