@@ -13,7 +13,8 @@ router = APIRouter()
 # =========================================================
 
 class NotesRequest(BaseModel):
-    url: str
+    url: str | None = None
+    transcript: str | None = None
 
 
 # =========================================================
@@ -23,65 +24,110 @@ class NotesRequest(BaseModel):
 @router.post("/ai/notes")
 def generate_ai_notes(data: NotesRequest):
     """
-    Fetch transcript first, then generate AI notes.
+    Generate AI notes.
 
-    Compatible with the new structured response
-    returned by get_transcript().
+    Preferred flow:
+    - Frontend sends already-fetched transcript
+    - Backend generates notes directly
+
+    Fallback flow:
+    - If transcript is not provided
+    - Backend fetches transcript using URL
     """
 
     try:
-        print("=" * 50)
+        print("=" * 60)
         print("AI Notes request received")
         print("URL:", data.url)
-        print("=" * 50)
-
-        # -----------------------------------------
-        # FETCH TRANSCRIPT
-        # -----------------------------------------
-
-        transcript_result = get_transcript(data.url)
-
         print(
-            "Transcript result success:",
-            transcript_result.get("success")
-            if isinstance(transcript_result, dict)
-            else "invalid_result"
+            "Transcript provided by frontend:",
+            bool(data.transcript)
         )
+        print("=" * 60)
 
-        # -----------------------------------------
-        # VALIDATE TRANSCRIPT RESPONSE
-        # -----------------------------------------
+        transcript = None
 
-        if not isinstance(transcript_result, dict):
+        # =====================================================
+        # METHOD 1: USE TRANSCRIPT SENT BY FRONTEND
+        # =====================================================
+
+        if (
+            data.transcript
+            and isinstance(data.transcript, str)
+            and data.transcript.strip()
+        ):
+            transcript = data.transcript.strip()
+
+            print(
+                "SUCCESS: Using transcript sent by frontend."
+            )
+            print(
+                "Transcript characters:",
+                len(transcript)
+            )
+
+        # =====================================================
+        # METHOD 2: FALLBACK TO URL TRANSCRIPT FETCH
+        # =====================================================
+
+        elif data.url:
+            print(
+                "No transcript provided by frontend."
+            )
+            print(
+                "Falling back to transcript service..."
+            )
+
+            transcript_result = get_transcript(data.url)
+
+            print(
+                "Transcript result success:",
+                transcript_result.get("success")
+                if isinstance(transcript_result, dict)
+                else "invalid_result"
+            )
+
+            if not isinstance(transcript_result, dict):
+                return {
+                    "success": False,
+                    "error": "invalid_transcript_response",
+                    "message": (
+                        "Transcript service returned "
+                        "an invalid response."
+                    ),
+                }
+
+            if not transcript_result.get("success"):
+                return {
+                    "success": False,
+                    "error": transcript_result.get(
+                        "error",
+                        "transcript_unavailable",
+                    ),
+                    "message": transcript_result.get(
+                        "message",
+                        "Transcript not available.",
+                    ),
+                }
+
+            transcript = transcript_result.get("transcript")
+
+        # =====================================================
+        # NO TRANSCRIPT AND NO URL
+        # =====================================================
+
+        else:
             return {
                 "success": False,
-                "error": "invalid_transcript_response",
+                "error": "missing_input",
                 "message": (
-                    "Transcript service returned "
-                    "an invalid response."
+                    "Either transcript or URL is required."
                 ),
             }
 
-        if not transcript_result.get("success"):
-            return {
-                "success": False,
-                "error": transcript_result.get(
-                    "error",
-                    "transcript_unavailable",
-                ),
-                "message": transcript_result.get(
-                    "message",
-                    "Transcript not available.",
-                ),
-            }
-
-        # -----------------------------------------
-        # EXTRACT ACTUAL TRANSCRIPT STRING
-        # -----------------------------------------
-
-        transcript = transcript_result.get(
-            "transcript"
-        )
+        # =====================================================
+        # VALIDATE FINAL TRANSCRIPT
+        # =====================================================
 
         if not transcript:
             return {
@@ -103,18 +149,29 @@ def generate_ai_notes(data: NotesRequest):
                 ),
             }
 
+        transcript = transcript.strip()
+
+        if not transcript:
+            return {
+                "success": False,
+                "error": "empty_transcript",
+                "message": (
+                    "Transcript contained no usable text."
+                ),
+            }
+
         print(
-            "Transcript characters:",
+            "Final transcript characters:",
             len(transcript)
         )
 
-        # -----------------------------------------
-        # GENERATE NOTES
-        # -----------------------------------------
+        # =====================================================
+        # GENERATE AI NOTES
+        # =====================================================
 
-        notes = generate_notes(
-            transcript
-        )
+        print("Generating AI notes...")
+
+        notes = generate_notes(transcript)
 
         if not notes:
             return {
@@ -125,13 +182,9 @@ def generate_ai_notes(data: NotesRequest):
                 ),
             }
 
-        print("=" * 50)
+        print("=" * 60)
         print("AI notes generated successfully")
-        print("=" * 50)
-
-        # -----------------------------------------
-        # SUCCESS RESPONSE
-        # -----------------------------------------
+        print("=" * 60)
 
         return {
             "success": True,
@@ -139,18 +192,18 @@ def generate_ai_notes(data: NotesRequest):
         }
 
     except Exception as e:
-        print("=" * 50)
+        print("=" * 60)
         print(
             "AI Notes Route Error:",
             type(e).__name__,
             str(e),
         )
-        print("=" * 50)
+        print("=" * 60)
 
         return {
             "success": False,
             "error": type(e).__name__,
             "message": (
-                "Could not generate AI notes."
+                f"Could not generate AI notes: {str(e)}"
             ),
         }
